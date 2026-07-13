@@ -1,0 +1,39 @@
+name: 每日汽车热点
+
+on:
+  schedule:
+    # 每天北京时间上午10:00 (UTC+8 → UTC 02:00)
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  daily-car-news:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install requests beautifulsoup4
+
+      - name: 抓取新闻 & 生成内容
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          QMAIL_AUTH_CODE: ${{ secrets.QMAIL_AUTH_CODE }}
+        run: python3 scripts/generate_and_send.py
+
+      - name: 归档输出
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: car-news-images
+          path: output/
+          retention-days: 7

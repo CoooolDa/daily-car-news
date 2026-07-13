@@ -1,0 +1,14 @@
+[Unit]
+Description=每日汽车热点自动生成与推送
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/workspace
+ExecStart=/bin/true
+# 实际由 WorkBuddy Cron 驱动，此文件为记录用途
+
+[Install]
+WantedBy=multi-user.target
