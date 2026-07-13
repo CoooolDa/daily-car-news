@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-每日汽车热点 - GitHub Actions 自动执行脚本
-1. 抓取最新汽车新闻（5条精选）
-2. 生成 HTML 邮件（精美卡片排版）
-3. 通过 QQ 邮箱发送
+每日汽车热点 - GitHub Actions 自动执行脚本 (DeepSeek LLM 版)
+1. 从多个汽车新闻源实时抓取最新资讯
+2. 用 DeepSeek LLM 精选5条 + 生成标题 + 撰写20字概括
+3. 生成精美 HTML 邮件发送到 QQ 邮箱
 """
 
 import os
 import re
 import json
+import html as html_mod
 import smtplib
 import datetime
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import Header
@@ -23,65 +25,206 @@ SENDER = "740418164@qq.com"
 PASSWORD = os.environ.get("QMAIL_AUTH_CODE", "")
 RECEIVER = "740418164@qq.com"
 
+# DeepSeek API
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+
 # ========== 新闻抓取 ==========
 
-def fetch_car_news():
+def fetch_raw_news():
     """
-    抓取汽车行业热点新闻。
-    GitHub Actions 环境下无法直接调用 ImageGen，
-    因此这里使用 requests 抓取公开 RSS/API，或使用预设模板。
+    从多个汽车新闻源抓取原始内容
+    """
+    raw_texts = []
     
-    实际部署后可通过搜索引擎 API、RSS 订阅等实时抓取。
-    """
-    try:
-        import requests
-        # 尝试从盖世汽车 RSS 抓取
-        resp = requests.get("https://auto.gasgoo.com/", timeout=15, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        if resp.status_code == 200:
-            print(f"[OK] 抓取汽车新闻页面成功, 长度: {len(resp.text)}")
-    except Exception as e:
-        print(f"[WARN] 实时抓取失败: {e}, 使用备用数据")
-
-    # 备用：今日精选新闻（每天由 Agent 更新）
-    today = datetime.date.today()
-    news = [
+    sources = [
         {
-            "title": "比亚迪第1700万辆新能源车下线",
-            "summary": "海豹08成里程碑车型，搭载第二代刀片电池，续航905km",
-            "source": "比亚迪官方"
+            "name": "盖世汽车",
+            "url": "https://auto.gasgoo.com/",
+            "pattern": r'<a[^>]*href="([^"]*)"[^>]*title="([^"]*)"[^>]*>',
         },
         {
-            "title": "全新坦克300开启预售",
-            "summary": "25.98万起，轴距加长260mm，三动力版本可选",
-            "source": "长城汽车"
+            "name": "汽车之家快讯",
+            "url": "https://www.autohome.com.cn/all/",
+            "pattern": None,
         },
         {
-            "title": "奔驰纯电GLC SUV上市",
-            "summary": "入门29.99万，CLTC续航703km，搭载Momenta智驾",
-            "source": "梅赛德斯-奔驰"
+            "name": "IT之家汽车",
+            "url": "https://www.ithome.com/tag/qiche",
+            "pattern": None,
         },
-        {
-            "title": "腾势Z登陆古德伍德速度节",
-            "summary": "中国超跑全球首秀，三电机1180kW，线控转向",
-            "source": "腾势汽车"
-        },
-        {
-            "title": "上半年新能源车产销超700万辆",
-            "summary": "6月出口首破100万辆，同比增75%，纯电占比67%",
-            "source": "中汽协"
-        }
     ]
-    return news
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    
+    for src in sources:
+        try:
+            resp = requests.get(src["url"], timeout=15, headers=headers)
+            if resp.status_code == 200:
+                # 简单提取文本（去除 HTML 标签）
+                text = re.sub(r'<script[^>]*>.*?</script>', '', resp.text, flags=re.DOTALL)
+                text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+                text = re.sub(r'<[^>]+>', ' ', text)
+                text = re.sub(r'\s+', ' ', text)
+                # 只取前 5000 字符
+                snippet = text[:5000]
+                raw_texts.append(f"【来源：{src['name']}】\n{snippet}")
+                print(f"[OK] {src['name']} 抓取成功, 内容长度: {len(text)}")
+            else:
+                print(f"[WARN] {src['name']} 返回 {resp.status_code}")
+        except Exception as e:
+            print(f"[WARN] {src['name']} 抓取失败: {e}")
+    
+    return "\n\n".join(raw_texts) if raw_texts else ""
+
+
+# ========== DeepSeek LLM 调用 ==========
+
+def call_deepseek(prompt: str, system_prompt: str = "", temperature: float = 0.7) -> str:
+    """调用 DeepSeek API"""
+    if not DEEPSEEK_API_KEY:
+        print("[ERROR] 未设置 DEEPSEEK_API_KEY!")
+        return ""
+    
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    
+    try:
+        resp = requests.post(
+            DEEPSEEK_API_URL,
+            json={
+                "model": "deepseek-chat",
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": 2048,
+            },
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[ERROR] DeepSeek 调用失败: {e}")
+        return ""
+
+
+def analyze_news_with_llm(raw_text: str, today_str: str) -> dict:
+    """
+    用 DeepSeek 分析新闻内容：
+    1. 精选5条最有价值的汽车新闻
+    2. 为每条生成 ≤20字 的概括
+    3. 生成一个 ≤10字 的封面标题
+    """
+    
+    system = """你是一位资深汽车行业编辑，精通全球汽车资讯。你的任务是从新闻素材中精选最有价值的5条热点新闻。
+
+要求：
+1. 每条新闻生成一个清晰标题和不超过20字的概括（说清核心信息）
+2. 生成一个≤10字的封面标题，要吸引眼球、有冲击力
+3. 优先选择：新车发布、重大行业政策、销量里程碑、技术突破、全球车展动态
+4. 内容覆盖尽量多元（不要5条都是同一个品牌）
+5. 严格按 JSON 格式输出"""
+
+    prompt = f"""今天是 {today_str}。请从以下汽车行业新闻素材中，精选5条今日最有价值的热点。
+
+新闻素材：
+{raw_text[:6000]}
+
+请严格按以下 JSON 格式输出（不要输出其他内容）：
+```json
+{{
+  "cover_title": "≤10字的吸引眼球标题",
+  "news": [
+    {{
+      "title": "新闻标题",
+      "summary": "≤20字的核心概括",
+      "source": "新闻来源"
+    }}
+  ]
+}}
+```
+
+注意：
+- cover_title 必须 ≤10个汉字，要有冲击力，让人想点进来看
+- summary 必须 ≤20个汉字，说清核心信息
+- 每条 news 的 source 尽量标注来源
+- 必须是今天的新闻，如果新闻素材不新鲜，从中挑最有价值的即可"""
+
+    result = call_deepseek(prompt, system, temperature=0.8)
+    
+    # 解析 JSON
+    try:
+        # 提取 JSON 块
+        json_match = re.search(r'```json\s*(.*?)\s*```', result, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+        else:
+            json_str = result
+        
+        data = json.loads(json_str)
+        cover_title = data.get("cover_title", "今日车圈重磅速递")
+        news_list = data.get("news", [])
+        
+        # 确保 ≤5条
+        news_list = news_list[:5]
+        
+        # 验证每条数据完整
+        for item in news_list:
+            if "title" not in item or not item["title"]:
+                item["title"] = "汽车行业快讯"
+            if "summary" not in item or not item["summary"]:
+                item["summary"] = item["title"][:20]
+            if "source" not in item or not item["source"]:
+                item["source"] = "综合资讯"
+        
+        print(f"[LLM] 封面标题: {cover_title}")
+        print(f"[LLM] 精选新闻: {len(news_list)} 条")
+        
+        return {
+            "cover_title": cover_title,
+            "news": news_list,
+        }
+    
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"[ERROR] LLM 输出解析失败: {e}")
+        print(f"[DEBUG] LLM 原始输出:\n{result[:500]}")
+        return None
+
+
+# ========== 备用数据 ==========
+
+def get_fallback_news():
+    """当 LLM 不可用时的备用数据"""
+    today = datetime.date.today()
+    return {
+        "cover_title": "车圈今日大事件",
+        "news": [
+            {"title": "比亚迪第1700万辆新能源车下线", "summary": "海豹08成里程碑车型，续航905km", "source": "比亚迪"},
+            {"title": "全新坦克300开启预售", "summary": "25.98万起，轴距加长260mm", "source": "长城汽车"},
+            {"title": "奔驰纯电GLC SUV上市", "summary": "入门29.99万，续航超700km", "source": "梅赛德斯-奔驰"},
+            {"title": "腾势Z登陆古德伍德速度节", "summary": "中国超跑全球首秀三电机千匹", "source": "腾势汽车"},
+            {"title": "上半年新能源车产销超700万辆", "summary": "6月出口首破100万辆增75%", "source": "中汽协"},
+        ]
+    }
 
 
 # ========== HTML 邮件生成 ==========
 
-def build_html(news_list, cover_title, today_str):
+def build_html(news_list, cover_title, today_str, source_info=""):
     """构建深色主题精美 HTML 邮件"""
     items_html = ""
     emojis = ["①", "②", "③", "④", "⑤"]
@@ -95,14 +238,16 @@ def build_html(news_list, cover_title, today_str):
       <tr>
         <td style="padding: 20px;">
           <span style="color:{colors[i]}; font-size:13px; font-weight:bold;">{emojis[i]}</span>
-          <h3 style="color:#fff; margin:6px 0; font-size:17px;">{news['title']}</h3>
-          <p style="color:#aaa; margin:4px 0 0; font-size:14px; line-height:1.5;">{news['summary']}</p>
-          <p style="color:#555; margin:6px 0 0; font-size:11px;">📎 {news.get('source', '')}</p>
+          <h3 style="color:#fff; margin:6px 0; font-size:17px;">{html_mod.escape(news['title'])}</h3>
+          <p style="color:#aaa; margin:4px 0 0; font-size:14px; line-height:1.5;">{html_mod.escape(news['summary'])}</p>
+          <p style="color:#555; margin:6px 0 0; font-size:11px;">📎 {html_mod.escape(news.get('source', ''))}</p>
         </td>
       </tr>
     </table>
   </td>
 </tr>"""
+
+    source_note = f'<p style="color:#444; font-size:11px; margin:4px 0 0;">{source_info}</p>' if source_info else ""
 
     return f"""<!DOCTYPE html>
 <html>
@@ -110,25 +255,22 @@ def build_html(news_list, cover_title, today_str):
 <body style="font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif; max-width:620px; margin:0 auto; padding:0; background:#0d0d0d; color:#fff;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#0d0d0d;">
   
-  <!-- Header -->
   <tr>
     <td style="background:linear-gradient(135deg,#ff6b35,#f7931e); border-radius:16px; padding:35px 25px; text-align:center;">
-      <h1 style="font-size:30px; margin:0; color:#fff; letter-spacing:2px;">🔥 {cover_title}</h1>
+      <h1 style="font-size:30px; margin:0; color:#fff; letter-spacing:2px;">🔥 {html_mod.escape(cover_title)}</h1>
       <p style="margin:12px 0 0; opacity:0.85; color:#fff; font-size:14px;">{today_str} · 每日汽车热点精选</p>
+      {source_note}
     </td>
   </tr>
   
   <tr><td style="height:20px;"></td></tr>
-  
-  <!-- News Cards -->
   {items_html}
   
-  <!-- Footer -->
   <tr><td style="height:24px;"></td></tr>
   <tr>
     <td style="text-align:center; padding:20px 0; border-top:1px solid #222;">
       <p style="color:#444; font-size:12px; margin:0;">
-        ⏰ 每日上午10:00 自动推送 &nbsp;|&nbsp; 📸 配图版请查看 WorkBuddy<br>
+        ⏰ 每日上午10:00 自动推送 &nbsp;|&nbsp; 🤖 由 DeepSeek AI 分析生成<br>
         Powered by <span style="color:#f7931e;">WorkBuddy</span> 🚀
       </p>
     </td>
@@ -142,9 +284,8 @@ def build_html(news_list, cover_title, today_str):
 # ========== 邮件发送 ==========
 
 def send_email(subject, html_body):
-    """通过 QQ 邮箱 SMTP 发送"""
     if not PASSWORD:
-        print("[ERROR] 未设置 QMAIL_AUTH_CODE 环境变量!")
+        print("[ERROR] 未设置 QMAIL_AUTH_CODE!")
         return False
     
     msg = MIMEMultipart('alternative')
@@ -166,32 +307,6 @@ def send_email(subject, html_body):
         return False
 
 
-# ========== 生成标题 ==========
-
-def generate_cover_title(news_list):
-    """
-    基于新闻内容生成吸引眼球的标题（≤10字）
-    这里用简单规则，实际可接入 LLM 生成
-    """
-    keywords = []
-    for n in news_list:
-        t = n['title']
-        if '比亚迪' in t: keywords.append('比亚迪')
-        if '奔驰' in t or 'GLC' in t: keywords.append('奔驰')
-        if '坦克' in t: keywords.append('坦克300')
-        if '腾势' in t or '超跑' in t: keywords.append('超跑')
-        if '出口' in t or '产销' in t: keywords.append('出口破百万')
-    
-    # 简单策略生成标题
-    title_patterns = [
-        "车圈炸了！新车井喷",
-        "今日车圈重磅速递",
-        "新车狂潮！必看速览",
-        "车圈今日大事件",
-    ]
-    return title_patterns[datetime.date.today().day % len(title_patterns)]
-
-
 # ========== Main ==========
 
 def main():
@@ -200,43 +315,59 @@ def main():
     date_short = today.strftime("%m/%d")
     
     print(f"{'='*50}")
-    print(f"🚗 每日汽车热点生成器")
+    print(f"🚗 每日汽车热点生成器 (DeepSeek AI)")
     print(f"📅 {today_str}")
     print(f"{'='*50}")
     
     # 1. 抓取新闻
-    print("\n[1/3] 抓取新闻...")
-    news = fetch_car_news()
-    print(f"  获取到 {len(news)} 条新闻")
+    print("\n[1/4] 抓取实时新闻...")
+    raw_text = fetch_raw_news()
+    news_count = len(raw_text.split("【来源：")) - 1 if raw_text else 0
+    print(f"  获取到 {news_count} 个新闻源")
     
-    # 2. 生成标题
-    print("\n[2/3] 生成封面标题...")
-    cover_title = generate_cover_title(news)
-    print(f"  标题: {cover_title}")
+    # 2. LLM 分析
+    result = None
+    source_info = ""
+    
+    if raw_text and DEEPSEEK_API_KEY:
+        print("\n[2/4] DeepSeek AI 分析中...")
+        result = analyze_news_with_llm(raw_text, today_str)
+        if result:
+            source_info = "🤖 实时抓取 + AI 精选分析"
+        else:
+            print("[WARN] LLM 分析失败，使用备用数据")
+    
+    if not result:
+        print("\n[2/4] 使用备用精选数据...")
+        result = get_fallback_news()
+        source_info = "📋 今日精选备用数据"
+    
+    cover_title = result["cover_title"]
+    news = result["news"]
     
     # 3. 构建邮件
-    print("\n[3/3] 构建并发送邮件...")
+    print("\n[3/4] 构建邮件...")
     subject = f"🚗 每日汽车热点 | {date_short} | {cover_title}"
-    html = build_html(news, cover_title, today_str)
+    html_content = build_html(news, cover_title, today_str, source_info)
     
-    # 保存 HTML 到 output
+    # 保存文件
     report_path = OUTPUT_DIR / f"car_news_{today.strftime('%Y%m%d')}.html"
-    report_path.write_text(html, encoding='utf-8')
+    report_path.write_text(html_content, encoding='utf-8')
     print(f"  报告已保存: {report_path}")
     
-    # 保存 JSON 数据
     data_path = OUTPUT_DIR / f"news_{today.strftime('%Y%m%d')}.json"
-    data = {
-        "date": today_str,
-        "cover_title": cover_title,
-        "news": news
-    }
-    data_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    data_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
     
-    # 发送邮件
-    success = send_email(subject, html)
+    # 4. 发送
+    print("\n[4/4] 发送邮件...")
+    success = send_email(subject, html_content)
     
     print(f"\n{'='*50}")
+    print(f"📰 封面标题: {cover_title}")
+    for i, n in enumerate(news, 1):
+        print(f"  {i}. {n['title']}")
+        print(f"     → {n['summary']}")
+    print(f"{'='*50}")
     print(f"{'✅ 完成!' if success else '⚠️ 邮件发送失败，但报告已生成'}")
     print(f"{'='*50}")
 

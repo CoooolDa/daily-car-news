@@ -26,7 +26,7 @@ jobs:
 
       - name: 抓取新闻 & 生成内容
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           QMAIL_AUTH_CODE: ${{ secrets.QMAIL_AUTH_CODE }}
         run: python3 scripts/generate_and_send.py
 
