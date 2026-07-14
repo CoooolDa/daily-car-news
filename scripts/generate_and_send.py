@@ -162,95 +162,81 @@ def generate_bg_image(prompt):
         return bg
 
 # ==================== 图片合成(Pillow精确中文) ====================
-def create_cover(bg, title_text, today_str):
-    """封面：背景+精确中文排版"""
+def create_cover(bg, title_text):
+    """封面：简洁真人小红书风格，突出大标题+一句钩子"""
     draw = ImageDraw.Draw(bg)
     
-    # 压暗背景
-    overlay = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,120))
+    # 整体压暗，让文字更突出
+    overlay = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,100))
     bg = Image.alpha_composite(bg.convert('RGBA'), overlay).convert('RGB')
     draw = ImageDraw.Draw(bg)
     
-    # 顶部装饰线
-    draw.rectangle([0, 0, IMG_W, 6], fill='#FF6B35')
+    # 顶部细长装饰线
+    draw.rectangle([0, 0, IMG_W, 8], fill='#FF6B35')
     
-    # 中央半透明卡片
-    card_y, card_h = 280, 380
-    card_overlay = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,0))
-    cdraw = ImageDraw.Draw(card_overlay)
-    cdraw.rounded_rectangle([60, card_y, IMG_W-60, card_y+card_h], radius=24, fill=(15,15,30,200), outline=(255,107,53,160), width=3)
-    bg = Image.alpha_composite(bg.convert('RGBA'), card_overlay).convert('RGB')
-    draw = ImageDraw.Draw(bg)
+    # 大标题：放在中上方，字号最大
+    font_title = get_font(80)
+    max_w = IMG_W - 80
+    lines = []
+    current = ""
+    for ch in title_text:
+        test = current + ch
+        bbox = draw.textbbox((0,0), test, font=font_title)
+        if bbox[2]-bbox[0] > max_w and current:
+            lines.append(current)
+            current = ch
+        else:
+            current = test
+    if current:
+        lines.append(current)
     
-    # 标题
-    font_title = get_font(60)
-    bbox = draw.textbbox((0,0), title_text, font=font_title)
-    tw = bbox[2]-bbox[0]
-    draw.text(((IMG_W-tw)//2, card_y+60), title_text, fill='#FFFFFF', font=font_title)
+    title_y = 140
+    for line in lines:
+        bbox = draw.textbbox((0,0), line, font=font_title)
+        tw = bbox[2]-bbox[0]
+        # 文字阴影
+        draw.text(((IMG_W-tw)//2+3, title_y+3), line, fill='#000000', font=font_title)
+        draw.text(((IMG_W-tw)//2, title_y), line, fill='#FFFFFF', font=font_title)
+        title_y += 85
     
-    # 装饰线
-    draw.line([(IMG_W//2-60, card_y+170), (IMG_W//2+60, card_y+170)], fill='#FF6B35', width=2)
+    # 副标题/钩子：一句话概括今日亮点
+    font_hook = get_font(36)
+    hook = "今日车圈 5 大热点速览 👇"
+    bbox = draw.textbbox((0,0), hook, font=font_hook)
+    hw = bbox[2]-bbox[0]
+    draw.text(((IMG_W-hw)//2+2, title_y+22), hook, fill='#000000', font=font_hook)
+    draw.text(((IMG_W-hw)//2, title_y+20), hook, fill='#FF6B35', font=font_hook)
     
-    # 副标题
-    font_sub = get_font(32)
-    sub = "每日汽车热点精选"
-    bbox = draw.textbbox((0,0), sub, font=font_sub)
-    sw = bbox[2]-bbox[0]
-    draw.text(((IMG_W-sw)//2, card_y+200), sub, fill='#CCCCCC', font=font_sub)
-    
-    # 日期
-    font_date = get_font(26)
-    bbox = draw.textbbox((0,0), today_str, font=font_date)
-    dw = bbox[2]-bbox[0]
-    draw.text(((IMG_W-dw)//2, card_y+260), today_str, fill='#888888', font=font_date)
-    
-    # 底部标签
+    # 底部小标签：只有一行，不繁琐
     font_tag = get_font(28)
-    tags = ["🚗 新车发布", "📊 行业数据", "🔋 新能源", "📋 政策解读", "🌍 全球动态"]
-    tag_y = card_y + card_h + 30
-    for tag in tags:
-        bbox = draw.textbbox((0,0), tag, font=font_tag)
-        tw_tag = bbox[2]-bbox[0]
-        draw.text(((IMG_W-tw_tag)//2, tag_y), tag, fill='#999999', font=font_tag)
-        tag_y += 40
-    
-    # 底部装饰
-    draw.rectangle([0, IMG_H-6, IMG_W, IMG_H], fill='#FF6B35')
-    font_wm = get_font(22)
-    draw.text((IMG_W-270, IMG_H-40), "WorkBuddy · 每日汽车热点", fill='#555555', font=font_wm)
+    tag = "#汽车热点 · #新车 · #新能源车"
+    bbox = draw.textbbox((0,0), tag, font=font_tag)
+    tw_tag = bbox[2]-bbox[0]
+    draw.text(((IMG_W-tw_tag)//2+1, IMG_H-70+1), tag, fill='#000000', font=font_tag)
+    draw.text(((IMG_W-tw_tag)//2, IMG_H-70), tag, fill='#AAAAAA', font=font_tag)
     
     return bg
 
 def create_card(bg, title, summary, accent_color="#FF6B35"):
-    """内容卡片：背景+精确中文标题和概括"""
+    """内容卡片：竖版3:4，标题在上方，概括在底部小条，无大黑底"""
+    # 把正方形背景图裁剪为竖版 1080x1440
+    card_w, card_h = 1080, 1440
+    
+    # Resize 保持比例，然后居中裁剪
+    bg = bg.resize((card_w, card_h), Image.LANCZOS)
     draw = ImageDraw.Draw(bg)
     
-    # 压暗
-    overlay = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,80))
+    # 整体轻微压暗
+    overlay = Image.new('RGBA', (card_w, card_h), (0,0,0,60))
     bg = Image.alpha_composite(bg.convert('RGBA'), overlay).convert('RGB')
     draw = ImageDraw.Draw(bg)
     
     # 顶部色条
-    draw.rectangle([0, 0, IMG_W, 6], fill=accent_color)
+    draw.rectangle([0, 0, card_w, 6], fill=accent_color)
     
-    # 底部渐变遮罩
-    for y in range(IMG_H-400, IMG_H):
-        alpha = int(180 * (y-(IMG_H-400)) / 400)
-        draw.line([(0,y),(IMG_W,y)], fill=(0,0,0,alpha) if hasattr(draw,'rgba') else (0,0,0))
-    
-    # 实际用叠加层方式
-    shade = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,0))
-    sdraw = ImageDraw.Draw(shade)
-    for y in range(IMG_H-380, IMG_H):
-        a = int(200 * (y-(IMG_H-380)) / 380)
-        sdraw.line([(0,y),(IMG_W,y)], fill=(0,0,0,a))
-    bg = Image.alpha_composite(bg.convert('RGBA'), shade).convert('RGB')
-    draw = ImageDraw.Draw(bg)
-    
-    # 标题(上方,白色)
-    font_title = get_font(44)
-    # 自动换行
-    max_w = IMG_W - 100
+    # 标题在顶部（大字号，白色，带阴影）
+    font_title = get_font(52)
+    max_w = card_w - 80
     lines = []
     current = ""
     for ch in title:
@@ -265,38 +251,35 @@ def create_card(bg, title, summary, accent_color="#FF6B35"):
         lines.append(current)
     
     title_y = 50
-    for line in lines:
+    for line in lines[:2]:  # 最多2行
         bbox = draw.textbbox((0,0), line, font=font_title)
         tw = bbox[2]-bbox[0]
-        draw.text(((IMG_W-tw)//2, title_y), line, fill='#FFFFFF', font=font_title)
-        # 阴影
-        draw.text(((IMG_W-tw)//2+2, title_y+2), line, fill='#000000', font=font_title)
-        title_y += 55
+        draw.text(((card_w-tw)//2+2, title_y+2), line, fill='#000000', font=font_title)
+        draw.text(((card_w-tw)//2, title_y), line, fill='#FFFFFF', font=font_title)
+        title_y += 65
     
-    # 概括文字(中间大字,彩色背景)
-    summary = summary[:20]  # 确保≤20字
-    font_summary = get_font(50)
+    # 底部半透明小条：放概括（不是大黑底）
+    summary = summary[:20]
+    font_summary = get_font(44)
     bbox = draw.textbbox((0,0), summary, font=font_summary)
     sw = bbox[2]-bbox[0]
     sh = bbox[3]-bbox[1]
     
-    # 概括文字背景条
-    hex_c = accent_color.lstrip('#')
-    r, g, b = int(hex_c[0:2],16), int(hex_c[2:4],16), int(hex_c[4:6],16)
+    bar_h = sh + 40
+    bar_y = card_h - bar_h - 60
     
-    tag_bg = Image.new('RGBA', (IMG_W, IMG_H), (0,0,0,0))
-    tdraw = ImageDraw.Draw(tag_bg)
-    pad_x, pad_y = 24, 16
-    tdraw.rounded_rectangle(
-        [(IMG_W-sw)//2-pad_x, IMG_H//2+20-pad_y, (IMG_W+sw)//2+pad_x, IMG_H//2+20+sh+pad_y],
-        radius=16, fill=(r,g,b,200)
-    )
-    bg = Image.alpha_composite(bg.convert('RGBA'), tag_bg).convert('RGB')
+    # 底部渐变条（只覆盖底部一小条）
+    bar_overlay = Image.new('RGBA', (card_w, card_h), (0,0,0,0))
+    bdraw = ImageDraw.Draw(bar_overlay)
+    bdraw.rounded_rectangle([40, bar_y, card_w-40, bar_y+bar_h], radius=20, fill=(0,0,0,180))
+    bg = Image.alpha_composite(bg.convert('RGBA'), bar_overlay).convert('RGB')
     draw = ImageDraw.Draw(bg)
-    draw.text(((IMG_W-sw)//2, IMG_H//2+20), summary, fill='#FFFFFF', font=font_summary)
     
-    # 底部装饰
-    draw.rectangle([0, IMG_H-6, IMG_W, IMG_H], fill=accent_color)
+    # 概括文字
+    draw.text(((card_w-sw)//2, bar_y + 18), summary, fill='#FFFFFF', font=font_summary)
+    
+    # 底部装饰线
+    draw.rectangle([0, card_h-6, card_w, card_h], fill=accent_color)
     
     return bg
 
@@ -386,7 +369,7 @@ def main():
     
     # 封面
     cover_bg = generate_bg_image("luxury sports car collage neon city night, photorealistic")
-    cover = create_cover(cover_bg, ct, today_str)
+    cover = create_cover(cover_bg, ct)
     cover_path = OUTPUT_DIR / "cover.png"
     cover.save(str(cover_path), 'PNG', quality=90)
     paths.append(str(cover_path))
