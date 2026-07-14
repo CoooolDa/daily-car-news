@@ -31,18 +31,21 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 IMG_W, IMG_H = 1024, 1024
 
 # ==================== 字体 ====================
+# 字体路径：优先使用仓库自带Noto Sans SC字体，确保中文在GitHub Actions正确显示
 FONT_PATHS = [
+    str(Path(__file__).parent.parent / "fonts" / "NotoSansSC-Bold.ttf"),
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
 ]
 
 def get_font(size):
     for fp in FONT_PATHS:
         if os.path.exists(fp):
             try: return ImageFont.truetype(fp, size)
-            except: continue
+            except Exception as e:
+                print(f"[WARN] 字体加载失败 {fp}: {e}")
+                continue
+    print("[ERROR] 没有可用中文字体，文字可能显示为方块")
     return ImageFont.load_default()
 
 # ==================== 新闻抓取(优化源) ====================
